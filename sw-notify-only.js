@@ -1,23 +1,13 @@
 /**
- * dev / Vercel preview 渠道专用「通知通路 Service Worker」
+ * 通知通路 Service Worker（已添加 fetch 透传，满足 PWA 安装条件）
  *
- * 背景：
- *  - 这些渠道为了规避「Workbox precache 引用失效 chunk → 主屏幕 PWA 打开后白屏」的历史问题，
- *    通过 src/pwaPreviewCleanup.js + src/pwa.js 把所有 Service Worker 全部卸载。
- *  - 但 Android Chrome 在 PWA standalone 模式下硬编码禁用 `new Notification(...)`
- *    （会抛 Illegal constructor），唯一通路是 `ServiceWorkerRegistration.showNotification()`。
- *  - 因此 dev / preview 渠道里：没 SW = Android PWA 永远收不到通知。
- *
- * 本文件的策略：
- *  - 仍然给页面注册一个 SW，让 `getRegistration()` 拿得到东西；
- *  - 但本 SW **不监听 fetch 事件、不做任何缓存**，所以浏览器对所有静态资源都走原生网络，
- *    完全不会触发当年那个「过期 precache → 白屏」的链路；
- *  - 只处理 notificationclick + push 这两类通知相关事件。
- *
- * 与正式 main 部署的 Workbox `sw.js` 互不冲突：两者文件名/scope 不同，注册时按 scriptURL 区分。
+ * 在原版 sw-notify-only.js 基础上增加了一个 fetch 事件透传处理器：
+ * - 有 fetch 处理器 → 浏览器认定为可安装 PWA（显示「安装应用」而非「创建快捷方式」）
+ * - fetch 纯透传不缓存 → 不会触发旧版「过期 precache → 白屏」问题
+ * - 通知功能完全保留
  */
 
-const SW_VERSION = 'notify-only-v1';
+const SW_VERSION = 'notify-only-v2-pwa';
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -25,6 +15,14 @@ self.addEventListener('install', () => {
 
 self.addEventListener('activate', event => {
   event.waitUntil(self.clients.claim());
+});
+
+// PWA 安装必需：fetch 事件处理器（纯透传，不做任何缓存）
+self.addEventListener('fetch', event => {
+  // 只处理 GET，其他方法直接走默认
+  if (event.request.method !== 'GET') return;
+  // 纯网络透传，不缓存，避免白屏
+  event.respondWith(fetch(event.request).catch(() => fetch(event.request)));
 });
 
 // 用户点击系统通知 → 把已有 tab 拉到前台；没 tab 就新开一个
@@ -46,26 +44,19 @@ self.addEventListener('notificationclick', event => {
               if (typeof c.navigate === 'function' && targetUrl && c.url !== targetUrl) {
                 await c.navigate(targetUrl);
               }
-            } catch (_) {
-              // navigate 可能因 same-origin 检查失败，focus 成功就算成功
-            }
+            } catch (_) {}
             return;
           }
-        } catch (_) {
-          // 尝试下一个 client
-        }
+        } catch (_) {}
       }
       if (typeof self.clients.openWindow === 'function') {
         await self.clients.openWindow(targetUrl);
       }
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   })());
 });
 
-// Web Push 兜底（项目目前用本地 registration.showNotification，不一定走 push；
-// 留下兜底是为了避免 push 真到了之后浏览器自己弹一个空白默认通知）
+// Web Push 兜底
 self.addEventListener('push', event => {
   let title = '新消息';
   let body = '';
@@ -87,8 +78,8 @@ self.addEventListener('push', event => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon: '/ovo.png',
-      badge: '/ovo.png',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
       tag: data.tag || 'chat-msg',
       renotify: true,
       data,
